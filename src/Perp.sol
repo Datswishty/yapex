@@ -32,7 +32,6 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 // - 7. Liquidity providers cannot withdraw liquidity that is reserved for positions [✅]
 
 error InvalidPosition();
-error NotEnoughLiqudityInPool();
 error MaxLeverageExceeded();
 
 struct Position {
@@ -163,6 +162,12 @@ contract Perp {
         uint256 sizeInUsd = btcPrice * p.size / PRECISION_WBTC_USD;
         uint256 leverage = sizeInUsd / p.collateral;
         return leverage <= MAX_LEVERAGE;
+    }
+
+    function checkLiquidity() public view returns (uint256) {
+        require(msg.sender == address(pool), "Not authorized");
+        uint256 availableLiquidity = getPoolUsableBalance();
+        return availableLiquidity;
     }
 
     modifier onlyPositionOwner(bytes32 positionKey) {
