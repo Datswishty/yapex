@@ -2,7 +2,7 @@
 pragma solidity ^0.8.23;
 
 import "./interfaces/AggregatorV3Interface.sol";
-import "./YALPToken.sol";
+import "./Vault.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 //                             ,-.
@@ -46,7 +46,7 @@ struct Position {
 contract Perp {
     using SafeERC20 for IERC20;
     AggregatorV3Interface internal BTCPriceFeed;
-    YALPToken internal yalpToken;
+    Vault internal vault;
     IERC20 internal mainLiquidityToken;
     uint internal constant maxLeverage = 20;
     uint internal constant maxReservPercentage = 10;
@@ -63,18 +63,18 @@ contract Perp {
         address _mainLiquidityToken
     ) {
         BTCPriceFeed = AggregatorV3Interface(_BTCPriceFeed);
-        yalpToken = YALPToken(_yalpTokenAddress);
+        vault = Vault(_yalpTokenAddress);
         mainLiquidityToken = IERC20(_mainLiquidityToken);
     }
 
     function depositLiquidity(uint amount) external {
         mainLiquidityToken.safeTransferFrom(msg.sender, address(this), amount);
-        yalpToken.deposit(amount, msg.sender);
+        vault.deposit(amount, msg.sender);
     }
 
     function withdrawLiquidity(uint amount) external {
         // add check if liquidity is used in open position -> can't withdraw
-        yalpToken.withdraw(amount, msg.sender, msg.sender);
+        vault.withdraw(amount, msg.sender, msg.sender);
     }
 
     function openPosition(uint collateral, uint size, bool isLong) external {
@@ -82,7 +82,7 @@ contract Perp {
         // check that we are not exceding max leverage
         // check do we have enought liquidity for position
 
-        yalpToken.deposit();
+        //vault.deposit();
         bytes32 positionKey = getPositionKey(msg.sender, isLong);
 
         positions[positionKey] = Position(
