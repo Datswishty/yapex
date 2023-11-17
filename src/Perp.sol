@@ -43,7 +43,7 @@ struct Position {
 /// @title Yet Another Perpetual eXchange :)
 /// @author https://github.com/Datswishty
 /// @notice This is implementation of Mission 1 from https://guardianaudits.notion.site/Mission-1-Perpetuals-028ca44faa264d679d6789d5461cfb13
-contract YAPEX {
+contract Perp {
     using SafeERC20 for IERC20;
     AggregatorV3Interface internal BTCPriceFeed;
     YALPToken internal yalpToken;
@@ -81,6 +81,8 @@ contract YAPEX {
         require(collateral > 0 && size > 0, "Invalid inputs");
         // check that we are not exceding max leverage
         // check do we have enought liquidity for position
+
+        yalpToken.deposit();
         bytes32 positionKey = getPositionKey(msg.sender, isLong);
 
         positions[positionKey] = Position(

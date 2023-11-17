@@ -3,7 +3,7 @@ pragma solidity ^0.8.23;
 
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 
-contract YALPToken is ERC4626 {
+contract Vault is ERC4626 {
     constructor(
         address _mainLpTokenAddress
     )

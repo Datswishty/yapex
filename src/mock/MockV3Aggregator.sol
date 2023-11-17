@@ -66,7 +66,7 @@ interface AggregatorV3Interface {
  * its answer is unimportant
  * @notice I stole it from https://raw.githubusercontent.com/0x3agle/perpx/main/src/MockOracle.sol
  */
-contract MockV3Aggregator is AggregatorInterface, AggregatorV3Interface {
+contract MockOracle is AggregatorInterface, AggregatorV3Interface {
     uint256 public constant override version = 0;
 
     uint8 public override decimals;
