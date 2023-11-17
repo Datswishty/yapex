@@ -161,7 +161,10 @@ contract Perp {
                     ? false
                     : true;
         } else {
-            ((p.size * btcPrice) / p.collateral) > maxLeverage ? true : false;
+            return
+                ((p.size * btcPrice) / p.collateral) > maxLeverage
+                    ? true
+                    : false;
         }
     }
 
