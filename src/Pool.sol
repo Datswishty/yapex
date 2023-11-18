@@ -28,8 +28,7 @@ contract Pool is ERC4626, Ownable {
         address receiver,
         address owner
     ) public override(ERC4626) returns (uint256) {
-        uint256 idleLiquidity = Perp(perp).checkLiquidity();
-        console2.log("idleLiquidity", idleLiquidity);
+        uint256 idleLiquidity = Perp(perp).getPoolUsableBalance();
         if (idleLiquidity < assets) {
             revert NotEnoughLiqudityInPool();
         }
@@ -37,12 +36,8 @@ contract Pool is ERC4626, Ownable {
         return shares;
     }
 
-    function redeem(
-        uint256,
-        address,
-        address
-    ) public pure override(ERC4626) returns (uint256) {
-        revert NotSupported();
+    function setPerpAddress(address _perp) public onlyOwner {
+        perp = _perp;
     }
 
     function totalAssets() public view override(ERC4626) returns (uint256) {
@@ -53,7 +48,11 @@ contract Pool is ERC4626, Ownable {
         return super.totalAssets() - uint256(pnl);
     }
 
-    function setPerpAddress(address _perp) public onlyOwner {
-        perp = _perp;
+    function redeem(
+        uint256,
+        address,
+        address
+    ) public pure override(ERC4626) returns (uint256) {
+        revert NotSupported();
     }
 }

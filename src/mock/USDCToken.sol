@@ -9,11 +9,11 @@ contract USDCToken is ERC20, Ownable {
         _mint(msg.sender, 1000000e6);
     }
 
-    function decimals() public view virtual override returns (uint8) {
-        return 6; // Like in real USDC coin
-    }
-
     function mint(address to, uint256 amount) public onlyOwner {
         _mint(to, amount);
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 6; // Like in real USDC coin
     }
 }
