@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.23;
+pragma solidity ^0.8.20;
 
 import "./interfaces/AggregatorV3Interface.sol";
-import "./Vault.sol";
+import "./Pool.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {console2} from "forge-std/Test.sol";
 
 //                             ,-.
 //        ___,---.__          /'|`\          __,---,___
@@ -30,7 +31,6 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 // - 5. Traders can increase the size of a perpetual position [✅]
 // - 6. Traders can increase the collateral of a perpetual position [✅]
 // - 7. Liquidity providers cannot withdraw liquidity that is reserved for positions [✅]
-
 struct Position {
     address owner;
     uint256 size;
@@ -43,60 +43,66 @@ struct Position {
 /// @title Yet Another Perpetual eXchange :)
 /// @author https://github.com/Datswishty
 /// @notice This is implementation of Mission 1 from https://guardianaudits.notion.site/Mission-1-Perpetuals-028ca44faa264d679d6789d5461cfb13
+
 contract Perp {
+    error NotEnoughLiqudityInPool();
+    error InvalidPosition();
+    error MaxLeverageExceeded();
+
     using SafeERC20 for IERC20;
-    AggregatorV3Interface internal BTCPriceFeed;
-    Vault internal vault;
-    IERC20 internal liquidityToken;
-    uint internal constant maxLeverage = 20;
-    uint internal constant maxReservPercentage = 10;
-    uint internal constant maxReservUtilizationPercentage = 80;
-    uint public openInterest;
-    uint public openInterestBTC;
+
+    AggregatorV3Interface internal btcPriceFeed;
+    uint256 constant MAX_LEVERAGE = 20;
+    uint256 constant MAX_RESERVE_PERCENT_BPS = 1000;
+    uint256 constant PRECISION_WBTC_USD = 1e10;
+    uint256 constant MAX_RESERVE_UTILIZATION_PERCENT_BPS = 8000;
+    uint256 constant PERCENTAGE_BPS = 10000;
+    uint256 public openInterestLongBtc;
+    uint256 public openInterestShortBtc;
+    uint256 public openInterestLongUsd;
+    uint256 public openInterestShortUsd;
+    address public pool;
+    address public liquidityToken; //usdc
+    uint256 public totalCollateral;
 
     // positions tracks all open positions
     mapping(bytes32 => Position) public positions;
 
-    constructor(
-        address _BTCPriceFeed,
-        address _vaultTokenAddress,
-        address _liquidityToken
-    ) {
-        BTCPriceFeed = AggregatorV3Interface(_BTCPriceFeed);
-        vault = Vault(_vaultTokenAddress);
-        liquidityToken = IERC20(_liquidityToken);
+    /**
+     * @dev constructor
+     * @param _btcPriceFeed btc/usd price feed adress
+     * @param _pool usdc liquidity pool address
+     * @param _liquidityToken usdc address
+     */
+    constructor(address _btcPriceFeed, address _pool, address _liquidityToken) {
+        btcPriceFeed = AggregatorV3Interface(_btcPriceFeed);
+        pool = _pool;
+        liquidityToken = _liquidityToken;
     }
 
-    function depositLiquidity(uint amount) external {
-        liquidityToken.safeTransferFrom(msg.sender, address(this), amount);
-        vault.deposit(amount, msg.sender);
-    }
+    /* -------------------------------- EXTERNAL -------------------------------- */
+    function openPosition(
+        uint256 collateral,
+        uint256 size,
+        bool isLong
+    ) external returns (bytes32) {
+        if (collateral == 0 || size == 0) revert InvalidPosition();
+        // collateral will be in 6 decimal and size will be in 8 so handling maths accordingly
+        uint256 price = getBTCPrice();
+        //@dev if sizeInUsd < collateral. this will underflow and revert, this is intended behaviour as we don't want to allow size < collateral
+        uint256 sizeInUsd = (price * size) / PRECISION_WBTC_USD; //convert to 6 decimals
+        uint256 leverage = sizeInUsd / collateral;
 
-    function withdrawLiquidity(uint amount) external {
-        require(
-            liquidityToken.balanceOf(address(vault)) - amount > openInterest,
-            "Not enough liquidity"
-        ); // TODO Do we need to check maxReservUtilizationPercentage too?
-        vault.withdraw(amount, msg.sender, msg.sender);
-    }
+        if (leverage > MAX_LEVERAGE) revert InvalidPosition();
 
-    function openPosition(uint collateral, uint size, bool isLong) external {
-        require(
-            collateral > 0 &&
-                size > 0 &&
-                collateral * maxLeverage >= size * getBTCPrice(),
-            "Invalid inputs"
-        ); // check that we are not exceding max leverage and values are not 0
+        if (sizeInUsd > getPoolUsableBalance())
+            revert NotEnoughLiqudityInPool();
 
-        // this is ugly but I dunno how to make prettier do not prettify this line
-        require(
-            size * getBTCPrice() <=
-                (liquidityToken.balanceOf(address(vault)) *
-                    maxReservUtilizationPercentage) /
-                    100
-        ); // check do we have enought liquidity for position
-
-        liquidityToken.safeTransferFrom(msg.sender, address(this), collateral);
+        IERC20(liquidityToken).safeTransferFrom(
+            msg.sender,
+            address(this),
+            collateral
+        );
         bytes32 positionKey = getPositionKey(msg.sender, isLong);
 
         positions[positionKey] = Position(
@@ -107,28 +113,84 @@ contract Perp {
             isLong,
             block.timestamp
         );
-        adjustOpenInterest(size);
+        totalCollateral += collateral;
+        adjustOpenInterest(size, isLong, sizeInUsd);
+        return positionKey;
     }
 
     function increaseCollateral(
         bytes32 positionKey,
-        uint additionalCollateral
+        uint256 additionalCollateral
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         Position storage p = positions[positionKey];
         p.collateral += additionalCollateral;
+        totalCollateral += additionalCollateral;
     }
 
     function increasePositionSize(
         bytes32 positionKey,
-        uint additionalSize
+        uint256 additionalSize
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         Position storage p = positions[positionKey];
         p.size += additionalSize;
-        require(
-            checkDoesNotExceedMaxLeverage(positionKey),
-            "Wrong additional size"
-        ); // TODO check does this work
+
+        uint256 sizeInUsd = (getBTCPrice() * additionalSize) /
+            PRECISION_WBTC_USD;
+        if (!checkDoesNotExceedMaxLeverage(positionKey))
+            revert MaxLeverageExceeded();
+        if (p.isLong) {
+            openInterestLongBtc += additionalSize;
+            openInterestLongUsd += sizeInUsd;
+        } else {
+            openInterestShortBtc += additionalSize;
+            openInterestShortUsd += sizeInUsd;
+        }
     }
+
+    /* -------------------------------- INTERNAL -------------------------------- */
+
+    function adjustOpenInterest(
+        uint256 size,
+        bool isLong,
+        uint256 sizeUsd
+    ) internal {
+        if (isLong) {
+            openInterestLongBtc += size;
+            openInterestLongUsd += sizeUsd;
+        } else {
+            openInterestShortBtc += size;
+            openInterestShortUsd += sizeUsd;
+        }
+    }
+
+    function checkDoesNotExceedMaxLeverage(
+        bytes32 positionKey
+    ) internal view returns (bool) {
+        Position memory p = positions[positionKey];
+        uint256 btcPrice = getBTCPrice();
+        uint256 sizeInUsd = (btcPrice * p.size) / PRECISION_WBTC_USD;
+        uint256 leverage = sizeInUsd / p.collateral;
+        return leverage <= MAX_LEVERAGE;
+    }
+
+    function checkLiquidity() public view returns (uint256) {
+        require(msg.sender == address(pool), "Not authorized");
+        uint256 availableLiquidity = getPoolUsableBalance();
+        return availableLiquidity;
+    }
+
+    modifier onlyPositionOwner(bytes32 positionKey) {
+        require(positions[positionKey].owner == msg.sender, "Forbidden");
+        _;
+    }
+
+    modifier onlyHealthyPosition(bytes32 positionKey) {
+        if (checkDoesNotExceedMaxLeverage(positionKey))
+            revert MaxLeverageExceeded();
+        _;
+    }
+
+    /* --------------------------------- GETTERS -------------------------------- */
 
     // This one kinda "stollen" from gmx, but adjusted since we have only one index token
     // I think in v2 we would need to have more asses so function would be adjusted accordingly
@@ -139,45 +201,51 @@ contract Perp {
         return keccak256(abi.encodePacked(_account, _isLong));
     }
 
-    function getBTCPrice() internal view returns (uint) {
-        (, int BTCPrice, , , ) = BTCPriceFeed.latestRoundData(); // I tried to make this one liner but wasn't able to do so :(
-        return uint(BTCPrice); // convert to uint cuz if BTC is less than 0 it's just sad
+    function getBTCPrice() internal view returns (uint256) {
+        (, int256 BTCPrice, , , ) = btcPriceFeed.latestRoundData();
+        return uint256(BTCPrice);
     }
 
-    function adjustOpenInterest(uint size) internal {
-        openInterest += size * getBTCPrice();
-        openInterestBTC += size;
-    }
+    function getPoolUsableBalance() public view returns (uint256) {
+        uint256 poolBalance = IERC20(liquidityToken).balanceOf(pool);
+        uint256 totalOpenInterestUsd = openInterestShortUsd +
+            (openInterestLongBtc * getBTCPrice()) /
+            PRECISION_WBTC_USD;
+        uint256 maxUsableBalance = (poolBalance *
+            MAX_RESERVE_UTILIZATION_PERCENT_BPS) / PERCENTAGE_BPS; // 80% of pool balance
 
-    function checkDoesNotExceedMaxLeverage(
-        bytes32 positionKey
-    ) internal view returns (bool) {
-        // TODO there is a warning above but I don't see why
-        Position memory p = positions[positionKey];
-        uint btcPrice = getBTCPrice();
-        if (p.isLong) {
-            return
-                ((p.size * btcPrice) / p.collateral) > maxLeverage
-                    ? false
-                    : true;
+        if (totalOpenInterestUsd < maxUsableBalance) {
+            return maxUsableBalance - totalOpenInterestUsd;
         } else {
-            return
-                ((p.size * btcPrice) / p.collateral) > maxLeverage
-                    ? true
-                    : false;
+            return 0;
         }
     }
 
-    modifier onlyPositionOwner(bytes32 positionKey) {
-        require(positions[positionKey].owner == msg.sender, "Forbidden");
-        _;
+    function getCurrentTotalPnl() public view returns (int256) {
+        return getCurrentPnlLongs() + getCurrentPnlShorts();
     }
 
-    modifier onlyHealthyPosition(bytes32 positionKey) {
-        require(
-            checkDoesNotExceedMaxLeverage(positionKey),
-            "Unhealthy position"
-        );
-        _;
+    function getCurrentPnlLongs() public view returns (int256) {
+        uint256 currentLongOpenInterestValue = (openInterestLongBtc *
+            getBTCPrice()) / PRECISION_WBTC_USD;
+        return int256(currentLongOpenInterestValue - openInterestLongUsd);
+    }
+
+    function getCurrentPnlShorts() public view returns (int256) {
+        uint256 currentShortOpenInterestValue = (openInterestShortBtc *
+            getBTCPrice()) / PRECISION_WBTC_USD;
+        return int256(openInterestShortUsd - currentShortOpenInterestValue);
+    }
+
+    function getLongOpenInterestUsd() public view returns (uint256) {
+        return (openInterestLongBtc * getBTCPrice()) / PRECISION_WBTC_USD;
+    }
+
+    function getShortOpenInterestUsd() public view returns (uint256) {
+        return (openInterestShortBtc * getBTCPrice()) / PRECISION_WBTC_USD;
+    }
+
+    function getTotalOpenInterestUsd() public view returns (uint256) {
+        return getLongOpenInterestUsd() + getShortOpenInterestUsd();
     }
 }
