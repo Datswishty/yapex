@@ -78,42 +78,53 @@ contract Perp {
         liquidityToken = IERC20(_liquidityToken);
     }
 
-    function openPosition(uint256 collateral, uint256 size, bool isLong) external {
+    function openPosition(
+        uint256 collateral,
+        uint256 size,
+        bool isLong
+    ) external {
         if (collateral == 0 || size == 0) revert InvalidPosition();
         // collateral will be in 6 decimal and size will be in 8 so handling maths accordingly
         uint256 price = getBTCPrice();
-        uint256 sizeInUsd = price * size / PRECISION_WBTC_USD; //convert to 6 decimals
-            // if sizeInUsd < collateral. this will underflow and revert, this is intended behaviour as we don't want to allow size < collateral
+        uint256 sizeInUsd = (price * size) / PRECISION_WBTC_USD; //convert to 6 decimals
+        // if sizeInUsd < collateral. this will underflow and revert, this is intended behaviour as we don't want to allow size < collateral
         uint256 leverage = sizeInUsd / collateral;
 
         if (leverage > MAX_LEVERAGE) revert InvalidPosition();
 
-        if (sizeInUsd > getPoolUsableBalance()) revert NotEnoughLiqudityInPool();
+        if (sizeInUsd > getPoolUsableBalance())
+            revert NotEnoughLiqudityInPool();
 
         liquidityToken.safeTransferFrom(msg.sender, address(this), collateral);
         bytes32 positionKey = getPositionKey(msg.sender, isLong);
 
-        positions[positionKey] = Position(msg.sender, size, collateral, 0, isLong, block.timestamp);
+        positions[positionKey] = Position(
+            msg.sender,
+            size,
+            collateral,
+            0,
+            isLong,
+            block.timestamp
+        );
         adjustOpenInterest(size, isLong);
     }
 
-    function increaseCollateral(bytes32 positionKey, uint256 additionalCollateral)
-        external
-        onlyPositionOwner(positionKey)
-        onlyHealthyPosition(positionKey)
-    {
+    function increaseCollateral(
+        bytes32 positionKey,
+        uint256 additionalCollateral
+    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         Position storage p = positions[positionKey];
         p.collateral += additionalCollateral;
     }
 
-    function increasePositionSize(bytes32 positionKey, uint256 additionalSize)
-        external
-        onlyPositionOwner(positionKey)
-        onlyHealthyPosition(positionKey)
-    {
+    function increasePositionSize(
+        bytes32 positionKey,
+        uint256 additionalSize
+    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         Position storage p = positions[positionKey];
         p.size += additionalSize;
-        if (!checkDoesNotExceedMaxLeverage(positionKey)) revert MaxLeverageExceeded();
+        if (!checkDoesNotExceedMaxLeverage(positionKey))
+            revert MaxLeverageExceeded();
         if (p.isLong) {
             openInterestLongBtc += additionalSize;
             openInterestLongUsd += additionalSize * getBTCPrice();
@@ -125,25 +136,47 @@ contract Perp {
 
     // This one kinda "stollen" from gmx, but adjusted since we have only one index token
     // I think in v2 we would need to have more asses so function would be adjusted accordingly
-    function getPositionKey(address _account, bool _isLong) public pure returns (bytes32) {
+    function getPositionKey(
+        address _account,
+        bool _isLong
+    ) public pure returns (bytes32) {
         return keccak256(abi.encodePacked(_account, _isLong));
     }
 
     function getBTCPrice() internal view returns (uint256) {
-        (, int256 BTCPrice,,,) = btcPriceFeed.latestRoundData();
+        (, int256 BTCPrice, , , ) = btcPriceFeed.latestRoundData();
         return uint256(BTCPrice);
     }
 
     function getPoolUsableBalance() public view returns (uint256) {
         uint256 poolBalance = IERC20(liquidityToken).balanceOf(pool);
-        uint256 totalOpenInterestUsd = openInterestShortUsd + openInterestLongBtc * getBTCPrice() / PRECISION_WBTC_USD;
-        uint256 maxUsableBalance = poolBalance * MAX_RESERVE_UTILIZATION_PERCENT_BPS / PERCENTAGE_BPS; // 80% of pool balance
+        uint256 totalOpenInterestUsd = openInterestShortUsd +
+            (openInterestLongBtc * getBTCPrice()) /
+            PRECISION_WBTC_USD;
+        uint256 maxUsableBalance = (poolBalance *
+            MAX_RESERVE_UTILIZATION_PERCENT_BPS) / PERCENTAGE_BPS; // 80% of pool balance
 
         if (totalOpenInterestUsd < maxUsableBalance) {
             return maxUsableBalance - totalOpenInterestUsd;
         } else {
             return 0;
         }
+    }
+
+    function getTotalPnl() public view returns (int256) {
+        return getPnlLongs() + getPnlShorts();
+    }
+
+    function getPnlLongs() public view returns (int256) {
+        uint256 currentLongOpenInterestValue = (openInterestLongBtc *
+            getBTCPrice()) / PRECISION_WBTC_USD;
+        return int256(currentLongOpenInterestValue - openInterestLongUsd);
+    }
+
+    function getPnlShorts() public view returns (int256) {
+        uint256 currentShortOpenInterestValue = (openInterestShortBtc *
+            getBTCPrice()) / PRECISION_WBTC_USD;
+        return int256(openInterestShortUsd - currentShortOpenInterestValue);
     }
 
     function adjustOpenInterest(uint256 size, bool isLong) internal {
@@ -156,10 +189,12 @@ contract Perp {
         }
     }
 
-    function checkDoesNotExceedMaxLeverage(bytes32 positionKey) internal view returns (bool) {
+    function checkDoesNotExceedMaxLeverage(
+        bytes32 positionKey
+    ) internal view returns (bool) {
         Position memory p = positions[positionKey];
         uint256 btcPrice = getBTCPrice();
-        uint256 sizeInUsd = btcPrice * p.size / PRECISION_WBTC_USD;
+        uint256 sizeInUsd = (btcPrice * p.size) / PRECISION_WBTC_USD;
         uint256 leverage = sizeInUsd / p.collateral;
         return leverage <= MAX_LEVERAGE;
     }
@@ -176,7 +211,8 @@ contract Perp {
     }
 
     modifier onlyHealthyPosition(bytes32 positionKey) {
-        if (checkDoesNotExceedMaxLeverage(positionKey)) revert MaxLeverageExceeded();
+        if (checkDoesNotExceedMaxLeverage(positionKey))
+            revert MaxLeverageExceeded();
         _;
     }
 }

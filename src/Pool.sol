@@ -3,10 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-
-interface IPerp {
-    function checkLiquidity() external view returns (uint256);
-}
+import {Perp} from "./Perp.sol";
 
 error NotSupported();
 error NotEnoughLiqudityInPool();
@@ -14,7 +11,9 @@ error NotEnoughLiqudityInPool();
 contract Pool is ERC4626, Ownable {
     address perp;
 
-    constructor(address usdc)
+    constructor(
+        address usdc
+    )
         ERC4626(IERC20(usdc))
         ERC20("Yet Another Perp eXchange Liquidity Provider Token", "YALP")
         Ownable(msg.sender)
@@ -23,8 +22,12 @@ contract Pool is ERC4626, Ownable {
     /**
      * @dev LPs cannot withdraw liquidity if it is being used in a position
      */
-    function withdraw(uint256 assets, address receiver, address owner) public override(ERC4626) returns (uint256) {
-        uint256 idleLiquidity = IPerp(perp).checkLiquidity();
+    function withdraw(
+        uint256 assets,
+        address receiver,
+        address owner
+    ) public override(ERC4626) returns (uint256) {
+        uint256 idleLiquidity = Perp(perp).checkLiquidity();
 
         if (idleLiquidity < assets) {
             revert NotEnoughLiqudityInPool();
@@ -33,8 +36,20 @@ contract Pool is ERC4626, Ownable {
         return shares;
     }
 
-    function redeem(uint256, address, address) public pure override(ERC4626) returns (uint256) {
+    function redeem(
+        uint256,
+        address,
+        address
+    ) public pure override(ERC4626) returns (uint256) {
         revert NotSupported();
+    }
+
+    function totalAssets() public view override(ERC4626) returns (uint256) {
+        int256 pnl = Perp(perp).getTotalPnl();
+        if (pnl < 0) {
+            return super.totalAssets();
+        }
+        return super.totalAssets() - uint256(pnl);
     }
 
     function setPerpAddress(address _perp) public onlyOwner {
