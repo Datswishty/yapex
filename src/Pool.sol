@@ -4,11 +4,12 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Perp} from "./Perp.sol";
-
-error NotSupported();
-error NotEnoughLiqudityInPool();
+import {console2} from "forge-std/Test.sol";
 
 contract Pool is ERC4626, Ownable {
+    error NotEnoughLiqudityInPool();
+    error NotSupported();
+
     address perp;
 
     constructor(
@@ -28,7 +29,7 @@ contract Pool is ERC4626, Ownable {
         address owner
     ) public override(ERC4626) returns (uint256) {
         uint256 idleLiquidity = Perp(perp).checkLiquidity();
-
+        console2.log("idleLiquidity", idleLiquidity);
         if (idleLiquidity < assets) {
             revert NotEnoughLiqudityInPool();
         }
@@ -45,8 +46,8 @@ contract Pool is ERC4626, Ownable {
     }
 
     function totalAssets() public view override(ERC4626) returns (uint256) {
-        int256 pnl = Perp(perp).getTotalPnl();
-        if (pnl < 0) {
+        int256 pnl = Perp(perp).getCurrentTotalPnl();
+        if (pnl <= 0) {
             return super.totalAssets();
         }
         return super.totalAssets() - uint256(pnl);
