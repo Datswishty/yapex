@@ -34,8 +34,8 @@ import {console2} from "forge-std/Test.sol";
 // - 8. Traders can decrease the size of their position and realize a proportional amount of their PnL [✅]
 // - 9. Traders can decrease the collateral of their position [✅]
 // - 10. Individual position’s can be liquidated with a liquidate function, any address may invoke the liquidate function [✅]
-// - 11. A liquidatorFee is taken from the position’s remaining collateral upon liquidation with the liquidate function and given to the caller of the liquidate function []
-// - 12. Traders can never modify their position such that it would make the position liquidatable [] I think is done, but we need to check
+// - 11. A liquidatorFee is taken from the position’s remaining collateral upon liquidation with the liquidate function and given to the caller of the liquidate function [✅]
+// - 12. Traders can never modify their position such that it would make the position liquidatable [✅]
 // - 13. Traders are charged a borrowingFee which accrues as a function of their position size and the length of time the position is open []
 // - 14. Traders are charged a positionFee from their collateral whenever they change the size of their position, the positionFee is a percentage of the position size delta (USD converted to collateral token). — Optional/Bonus []
 
@@ -45,7 +45,7 @@ struct Position {
     uint256 collateral;
     int256 realisedPnl; // if this value is not used then remove it
     bool isLong;
-    uint averagePositionPrice;
+    uint256 averagePositionPrice;
     uint256 lastIncreasedTime; // if this value is not used then remove it
 }
 
@@ -63,6 +63,8 @@ contract Perp {
     uint256 constant PRECISION_USDC = 1e6;
     uint256 constant MAX_RESERVE_UTILIZATION_PERCENT_BPS = 8_000;
     uint256 constant PERCENTAGE_BPS = 10_000;
+    uint256 constant PERCENTAGE_LIQUIDATION_FEE = 5;
+    uint256 constant PERCENTAGE_BORROW_FEE = 1;
     IERC20 public liquidityToken; //usdc
     uint256 public openInterestLongBtc;
     uint256 public openInterestShortBtc;
@@ -152,7 +154,9 @@ contract Perp {
         p.size += additionalSize;
 
         uint price = getBTCPrice();
-        p.averagePositionPrice = (p.averagePositionPrice * p.size + price * additionalSize ) / 2;
+        p.averagePositionPrice =
+            (p.averagePositionPrice * p.size + price * additionalSize) /
+            2; // the average is (old size * old price + currentPrice * newSize) / 2
 
         uint256 sizeInUsd = getBTCPrice() * additionalSize;
         if (checkDoesNotExceedMaxLeverage(positionKey)) {
@@ -168,10 +172,9 @@ contract Perp {
     }
 
     function decreasePositionCollateral(
-        bytes32 positionKey, 
-        uint256 collateralDecrease 
+        bytes32 positionKey,
+        uint256 collateralDecrease
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
-
         Position storage p = positions[positionKey];
         p.size -= collateralDecrease;
 
@@ -179,21 +182,21 @@ contract Perp {
             revert MaxLeverageExceeded();
         }
 
-        liquidityToken.safeTransfer(msg.sender,collateralDecrease);
+        liquidityToken.safeTransfer(msg.sender, collateralDecrease);
     }
-    function decreasePositionSize(
-        bytes32 positionKey, 
-        uint256 sizeDecrease 
-    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
 
+    function decreasePositionSize(
+        bytes32 positionKey,
+        uint256 sizeDecrease
+    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         Position storage p = positions[positionKey];
         p.size -= sizeDecrease;
-        int realisedPNL = getPositionPNL(positionKey); 
+        int realisedPNL = getPositionPNL(positionKey);
         if (realisedPNL > 0) {
-            liquidityToken.safeTransfer(msg.sender,abs(realisedPNL));
+            liquidityToken.safeTransfer(msg.sender, abs(realisedPNL));
         } else {
             p.collateral -= abs(realisedPNL);
-            liquidityToken.safeTransfer(address(pool),abs(realisedPNL));
+            liquidityToken.safeTransfer(address(pool), abs(realisedPNL));
         }
 
         if (checkDoesNotExceedMaxLeverage(positionKey)) {
@@ -202,25 +205,31 @@ contract Perp {
     }
 
     function liquidatePosition(bytes32 positionKey) external {
-        if(checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkDoesNotExceedMaxLeverage(positionKey)) {
             revert("Position is healthy");
         }
-        // need to add liquidation fee
         Position storage p = positions[positionKey];
         int realisedPNL = getPositionPNL(positionKey);
         if (realisedPNL < 0 && abs(realisedPNL) > p.collateral) {
             revert("IDK what to do in that case");
         }
-        if (realisedPNL > 0) {
-            liquidityToken.safeTransfer(p.owner,abs(realisedPNL));
-        } else {
-            liquidityToken.safeTransfer(p.owner,p.collateral - abs(realisedPNL));
-        }
         delete positions[positionKey];
 
+        if (realisedPNL > 0) {
+            uint liquidationFee = (abs(realisedPNL) *
+                PERCENTAGE_LIQUIDATION_FEE) / 100;
+            uint remainingPNL = abs(realisedPNL) - liquidationFee;
+            liquidityToken.safeTransfer(msg.sender, liquidationFee);
+            liquidityToken.safeTransfer(p.owner, remainingPNL);
+        } else {
+            uint remainingAmount = p.collateral - abs(realisedPNL);
+            uint liquidationFee = (remainingAmount *
+                PERCENTAGE_LIQUIDATION_FEE) / 100;
+            uint remainingPNL = remainingAmount - liquidationFee;
+            liquidityToken.safeTransfer(msg.sender, liquidationFee);
+            liquidityToken.safeTransfer(p.owner, remainingPNL);
+        }
     }
-
-
 
     /* -------------------------------- INTERNAL -------------------------------- */
 
@@ -242,7 +251,8 @@ contract Perp {
         bytes32 positionKey
     ) internal view returns (bool) {
         Position memory p = positions[positionKey];
-        uint256 leverage = p.size * p.averagePositionPrice / p.collateral;
+        uint price = getBTCPrice();
+        uint256 leverage = (p.size * price) / p.collateral;
         return leverage <= MAX_LEVERAGE;
     }
 
@@ -258,10 +268,11 @@ contract Perp {
     }
 
     function getBTCPrice() internal view returns (uint256) {
-        (, int256 answer, uint256 timestamp, , ) = btcPriceFeed.latestRoundData();
+        (, int256 answer, uint256 timestamp, , ) = btcPriceFeed
+            .latestRoundData();
         // require(updatedAt >= roundID, "Stale price"); this one should be in production but tests will fail with it
-        require(timestamp != 0,"Round not complete");
-        require(answer > 0,"Chainlink answer reporting 0");
+        require(timestamp != 0, "Round not complete");
+        require(answer > 0, "Chainlink answer reporting 0");
         return uint256(answer);
     }
 
@@ -308,10 +319,10 @@ contract Perp {
         return getLongOpenInterestUsd() + getShortOpenInterestUsd();
     }
 
-    function getPositionPNL(bytes32 positionKey) public view returns(int) {
+    function getPositionPNL(bytes32 positionKey) public view returns (int) {
         Position storage p = positions[positionKey];
         uint price = getBTCPrice();
-        if(p.isLong) {
+        if (p.isLong) {
             return int(price - p.averagePositionPrice) * int(p.size);
         } else {
             return int(p.averagePositionPrice - price) * int(p.size);

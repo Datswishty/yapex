@@ -131,6 +131,7 @@ contract PerpTest is Test {
             uint256 collateral,
             int256 pnl,
             bool isLong,
+            uint price,
             uint256 lastIncreasedTime
         ) = perp.positions(key);
 
