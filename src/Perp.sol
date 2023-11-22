@@ -46,7 +46,7 @@ struct Position {
     int256 realisedPnl; // if this value is not used then remove it
     bool isLong;
     uint256 averagePositionPrice;
-    uint256 lastIncreasedTime; // if this value is not used then remove it
+    uint256 lastUpdateTime;
 }
 
 /// @title Yet Another Perpetual eXchange :)
@@ -65,6 +65,7 @@ contract Perp {
     uint256 constant PERCENTAGE_BPS = 10_000;
     uint256 constant PERCENTAGE_LIQUIDATION_FEE = 5;
     uint256 constant PERCENTAGE_BORROW_FEE = 1;
+    uint256 constant borrowingPerSecond = 315_360_000;
     IERC20 public liquidityToken; //usdc
     uint256 public openInterestLongBtc;
     uint256 public openInterestShortBtc;
@@ -213,18 +214,21 @@ contract Perp {
         if (realisedPNL < 0 && abs(realisedPNL) > p.collateral) {
             revert("IDK what to do in that case");
         }
+        uint positionBorrowFees = getPositionBorrowFees(positionKey);
         delete positions[positionKey];
 
         if (realisedPNL > 0) {
-            uint liquidationFee = (abs(realisedPNL) *
-                PERCENTAGE_LIQUIDATION_FEE) / 100;
+            uint liquidationFee = positionBorrowFees +
+                (abs(realisedPNL) * PERCENTAGE_LIQUIDATION_FEE) /
+                100;
             uint remainingPNL = abs(realisedPNL) - liquidationFee;
             liquidityToken.safeTransfer(msg.sender, liquidationFee);
             liquidityToken.safeTransfer(p.owner, remainingPNL);
         } else {
             uint remainingAmount = p.collateral - abs(realisedPNL);
-            uint liquidationFee = (remainingAmount *
-                PERCENTAGE_LIQUIDATION_FEE) / 100;
+            uint liquidationFee = positionBorrowFees +
+                (remainingAmount * PERCENTAGE_LIQUIDATION_FEE) /
+                100;
             uint remainingPNL = remainingAmount - liquidationFee;
             liquidityToken.safeTransfer(msg.sender, liquidationFee);
             liquidityToken.safeTransfer(p.owner, remainingPNL);
@@ -252,11 +256,24 @@ contract Perp {
     ) internal view returns (bool) {
         Position memory p = positions[positionKey];
         uint price = getBTCPrice();
-        uint256 leverage = (p.size * price) / p.collateral;
+        uint borrowingFees = p.size *
+            (block.timestamp - p.lastUpdateTime) *
+            (1 / borrowingPerSecond);
+        uint256 leverage = (borrowingFees + p.size * price) / p.collateral;
         return leverage <= MAX_LEVERAGE;
     }
 
     /* --------------------------------- GETTERS -------------------------------- */
+
+    function getPositionBorrowFees(
+        bytes32 positionKey
+    ) internal view returns (uint) {
+        Position memory p = positions[positionKey];
+        return
+            p.size *
+            (block.timestamp - p.lastUpdateTime) *
+            (1 / borrowingPerSecond);
+    } // I dunno why we check only lastUpdateTime
 
     // This one kinda "stollen" from gmx, but adjusted since we have only one index token
     // I think in v2 we would need to have more asses so function would be adjusted accordingly
