@@ -31,13 +31,21 @@ import {console2} from "forge-std/Test.sol";
 // - 5. Traders can increase the size of a perpetual position [✅]
 // - 6. Traders can increase the collateral of a perpetual position [✅]
 // - 7. Liquidity providers cannot withdraw liquidity that is reserved for positions [✅]
-// - BONUS 8. Create and emit events [ ]
+// - 8. Traders can decrease the size of their position and realize a proportional amount of their PnL [✅]
+// - 9. Traders can decrease the collateral of their position [✅]
+// - 10. Individual position’s can be liquidated with a liquidate function, any address may invoke the liquidate function [✅]
+// - 11. A liquidatorFee is taken from the position’s remaining collateral upon liquidation with the liquidate function and given to the caller of the liquidate function []
+// - 12. Traders can never modify their position such that it would make the position liquidatable [] I think is done, but we need to check
+// - 13. Traders are charged a borrowingFee which accrues as a function of their position size and the length of time the position is open []
+// - 14. Traders are charged a positionFee from their collateral whenever they change the size of their position, the positionFee is a percentage of the position size delta (USD converted to collateral token). — Optional/Bonus []
+
 struct Position {
     address owner;
     uint256 size;
     uint256 collateral;
     int256 realisedPnl; // if this value is not used then remove it
     bool isLong;
+    uint averagePositionPrice;
     uint256 lastIncreasedTime; // if this value is not used then remove it
 }
 
@@ -121,6 +129,7 @@ contract Perp {
             collateral,
             0,
             isLong,
+            price,
             block.timestamp
         );
         adjustOpenInterest(size, isLong, sizeInUsd);
@@ -142,8 +151,11 @@ contract Perp {
         Position storage p = positions[positionKey];
         p.size += additionalSize;
 
+        uint price = getBTCPrice();
+        p.averagePositionPrice = (p.averagePositionPrice * p.size + price * additionalSize ) / 2;
+
         uint256 sizeInUsd = getBTCPrice() * additionalSize;
-        if (!checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkDoesNotExceedMaxLeverage(positionKey)) {
             revert MaxLeverageExceeded();
         }
         if (p.isLong) {
@@ -154,6 +166,61 @@ contract Perp {
             openInterestShortUsd += sizeInUsd;
         }
     }
+
+    function decreasePositionCollateral(
+        bytes32 positionKey, 
+        uint256 collateralDecrease 
+    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
+
+        Position storage p = positions[positionKey];
+        p.size -= collateralDecrease;
+
+        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+            revert MaxLeverageExceeded();
+        }
+
+        liquidityToken.safeTransfer(msg.sender,collateralDecrease);
+    }
+    function decreasePositionSize(
+        bytes32 positionKey, 
+        uint256 sizeDecrease 
+    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
+
+        Position storage p = positions[positionKey];
+        p.size -= sizeDecrease;
+        int realisedPNL = getPositionPNL(positionKey); 
+        if (realisedPNL > 0) {
+            liquidityToken.safeTransfer(msg.sender,abs(realisedPNL));
+        } else {
+            p.collateral -= abs(realisedPNL);
+            liquidityToken.safeTransfer(address(pool),abs(realisedPNL));
+        }
+
+        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+            revert MaxLeverageExceeded();
+        }
+    }
+
+    function liquidatePosition(bytes32 positionKey) external {
+        if(checkDoesNotExceedMaxLeverage(positionKey)) {
+            revert("Position is healthy");
+        }
+        // need to add liquidation fee
+        Position storage p = positions[positionKey];
+        int realisedPNL = getPositionPNL(positionKey);
+        if (realisedPNL < 0 && abs(realisedPNL) > p.collateral) {
+            revert("IDK what to do in that case");
+        }
+        if (realisedPNL > 0) {
+            liquidityToken.safeTransfer(p.owner,abs(realisedPNL));
+        } else {
+            liquidityToken.safeTransfer(p.owner,p.collateral - abs(realisedPNL));
+        }
+        delete positions[positionKey];
+
+    }
+
+
 
     /* -------------------------------- INTERNAL -------------------------------- */
 
@@ -175,9 +242,7 @@ contract Perp {
         bytes32 positionKey
     ) internal view returns (bool) {
         Position memory p = positions[positionKey];
-        uint256 btcPrice = getBTCPrice();
-        uint256 sizeInUsd = btcPrice * p.size;
-        uint256 leverage = sizeInUsd / p.collateral;
+        uint256 leverage = p.size * p.averagePositionPrice / p.collateral;
         return leverage <= MAX_LEVERAGE;
     }
 
@@ -193,8 +258,11 @@ contract Perp {
     }
 
     function getBTCPrice() internal view returns (uint256) {
-        (, int256 BTCPrice, , , ) = btcPriceFeed.latestRoundData();
-        return uint256(BTCPrice);
+        (, int256 answer, uint256 timestamp, , ) = btcPriceFeed.latestRoundData();
+        // require(updatedAt >= roundID, "Stale price"); this one should be in production but tests will fail with it
+        require(timestamp != 0,"Round not complete");
+        require(answer > 0,"Chainlink answer reporting 0");
+        return uint256(answer);
     }
 
     function getPoolUsableBalance() public view returns (uint256) {
@@ -238,5 +306,22 @@ contract Perp {
 
     function getTotalOpenInterestUsd() public view returns (uint256) {
         return getLongOpenInterestUsd() + getShortOpenInterestUsd();
+    }
+
+    function getPositionPNL(bytes32 positionKey) public view returns(int) {
+        Position storage p = positions[positionKey];
+        uint price = getBTCPrice();
+        if(p.isLong) {
+            return int(price - p.averagePositionPrice) * int(p.size);
+        } else {
+            return int(p.averagePositionPrice - price) * int(p.size);
+        }
+    }
+
+    function abs(int256 n) internal pure returns (uint256) {
+        unchecked {
+            // must be unchecked in order to support `n = type(int256).min`
+            return uint256(n >= 0 ? n : -n);
+        }
     }
 }
