@@ -241,7 +241,42 @@ contract PerpTest is Test {
         vm.stopPrank();
     }
 
-    //TODO: increase size when in loss
+    function test_increaseSizeWhenPositionInLossShouldFail() public {
+        vm.startPrank(lp);
+        depositToPool();
+        vm.stopPrank();
+        vm.startPrank(trader);
+        usdc.approve(address(perp), COLLATERAL_AMT);
+
+        bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
+        oracle.updateAnswer(10_000e8); // decrease price by half
+        int256 pnl = perp.getPositionPNL(key);
+        assertEq(pnl, -10_000e6); // 10k loss
+        vm.expectRevert(Perp.MaxLeverageExceeded.selector);
+        // Increase position size by 1 btc
+        perp.increasePositionSize(key, 1e8);
+        vm.stopPrank();
+    }
+
     //TODO: increase size when in profit and see if we can get profitted amount
+    function test_increaseSizeWhenPositionInProfitShouldPass() public {
+        vm.startPrank(lp);
+        depositToPool();
+        vm.stopPrank();
+        vm.startPrank(trader);
+        usdc.approve(address(perp), COLLATERAL_AMT);
+
+        bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
+        oracle.updateAnswer(30_000e8); // increase price by half
+        uint256 leverage = perp.getCurrentLeverage(key);
+        assertEq(leverage, 10);
+        int256 pnl = perp.getPositionPNL(key);
+        assertEq(pnl, 10_000e6); // 10k profit
+        // Increase position size by 1 btc
+
+        perp.increasePositionSize(key, 1e8);
+
+        vm.stopPrank();
+    }
     //TODO: increase size when not enough collateral
 }

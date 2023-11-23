@@ -180,12 +180,9 @@ contract Perp {
         bytes32 positionKey,
         uint256 collateralDecrease
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
-        // NOTE: We don't want to allow user to get below max leverage
         if (collateralDecrease == 0) revert ZeroAmount();
         Position storage p = positions[positionKey];
-        // @audit underflow can happen if collateralDecrease > p.collateral
-        p.collateral -= collateralDecrease;
-
+        p.collateral -= collateralDecrease; // @audit underflow can happen if collateralDecrease > p.collateral
         if (checkDoesNotExceedMaxLeverage(positionKey)) {
             revert MaxLeverageExceeded();
         }
@@ -204,8 +201,7 @@ contract Perp {
         uint256 currentTotalSizeInUsd = (getBTCPrice() * p.size) /
             PRECISION_WBTC_USD;
         int totalPositionPNL = getPositionPNL(positionKey);
-        // @audit underflow can happen if sizeDecrese > p.size
-        p.size -= sizeDecrease;
+        p.size -= sizeDecrease; // @audit underflow can happen if sizeDecrese > p.size
         p.sizeInUsd -= sizeDeltaInUsd; //@audit not sure of this,there can be some issue.
         int realisedPNL = int(totalPositionPNL * int(sizeDeltaInUsd)) /
             int(currentTotalSizeInUsd);
@@ -270,15 +266,7 @@ contract Perp {
     function checkDoesNotExceedMaxLeverage(
         bytes32 positionKey
     ) internal view returns (bool) {
-        Position memory p = positions[positionKey];
-        uint price = getBTCPrice();
-        uint borrowingFees = p.size *
-            (block.timestamp - p.lastUpdateTime) *
-            (1 / borrowingPerSecond);
-        uint256 leverage = (borrowingFees + p.size * price) /
-            p.collateral /
-            PRECISION_WBTC_USD;
-        // console2.log("leverage", leverage);
+        uint256 leverage = getCurrentLeverage(positionKey);
         return leverage <= MAX_LEVERAGE;
     }
 
@@ -294,8 +282,6 @@ contract Perp {
             (1 / borrowingPerSecond);
     } // I dunno why we check only lastUpdateTime
 
-    // This one kinda "stollen" from gmx, but adjusted since we have only one index token
-    // I think in v2 we would need to have more asses so function would be adjusted accordingly
     function getPositionKey(
         address _account,
         bool _isLong
@@ -308,8 +294,17 @@ contract Perp {
     ) public view returns (uint256) {
         Position memory p = positions[positionKey];
         uint price = getBTCPrice();
+        // uint borrowingFees = p.size *
+        //     (block.timestamp - p.lastUpdateTime) *
+        //     (1 / borrowingPerSecond);
         uint256 sizeInUsd = (price * p.size) / PRECISION_WBTC_USD;
-        uint256 leverage = sizeInUsd / p.collateral;
+        int256 positionPnl = getPositionPNL(positionKey);
+        uint256 leverage;
+        if (positionPnl > 0) {
+            leverage = sizeInUsd / p.collateral + uint256(positionPnl);
+        } else {
+            leverage = sizeInUsd / p.collateral - uint256(positionPnl);
+        }
         return leverage;
     }
 
