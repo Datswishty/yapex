@@ -198,13 +198,17 @@ contract Perp {
         uint256 sizeDecrease
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         if (sizeDecrease == 0) revert InvalidPosition();
-        uint256 sizeInUsd = (getBTCPrice() * sizeDecrease) / PRECISION_WBTC_USD;
+        uint256 sizeDeltaInUsd = (getBTCPrice() * sizeDecrease) /
+            PRECISION_WBTC_USD;
         Position storage p = positions[positionKey];
+        uint256 currentTotalSizeInUsd = (getBTCPrice() * p.size) /
+            PRECISION_WBTC_USD;
+        int totalPositionPNL = getPositionPNL(positionKey);
         // @audit underflow can happen if sizeDecrese > p.size
         p.size -= sizeDecrease;
-        p.sizeInUsd -= sizeInUsd; //@audit not sure of this,there can be some issue.
-        int positionPNL = getPositionPNL(positionKey);
-        int realisedPNL = (positionPNL * int(sizeInUsd)) / int(p.sizeInUsd);
+        p.sizeInUsd -= sizeDeltaInUsd; //@audit not sure of this,there can be some issue.
+        int realisedPNL = int(totalPositionPNL * int(sizeDeltaInUsd)) /
+            int(currentTotalSizeInUsd);
         if (realisedPNL > 0) {
             liquidityToken.safeTransfer(msg.sender, abs(realisedPNL));
         } else {
