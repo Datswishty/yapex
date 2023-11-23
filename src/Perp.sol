@@ -203,7 +203,8 @@ contract Perp {
         // @audit underflow can happen if sizeDecrese > p.size
         p.size -= sizeDecrease;
         p.sizeInUsd -= sizeInUsd; //@audit not sure of this,there can be some issue.
-        int realisedPNL = getPositionPNL(positionKey);
+        int positionPNL = getPositionPNL(positionKey);
+        int realisedPNL = (positionPNL * int(sizeInUsd)) / int(p.sizeInUsd);
         if (realisedPNL > 0) {
             liquidityToken.safeTransfer(msg.sender, abs(realisedPNL));
         } else {
