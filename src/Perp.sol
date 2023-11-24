@@ -82,6 +82,7 @@ contract Perp {
     error MaxLeverageExceeded();
     error NotPositionOwner(address);
     error ZeroAmount();
+    error CollateralDecreaseExceedsPositionCollateral();
 
     modifier onlyPositionOwner(bytes32 positionKey) {
         if (msg.sender != positions[positionKey].owner)
@@ -181,6 +182,8 @@ contract Perp {
         uint256 collateralDecrease
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         if (collateralDecrease == 0) revert ZeroAmount();
+        if (collateralDecrease >= positions[positionKey].collateral)
+            revert CollateralDecreaseExceedsPositionCollateral();
         Position storage p = positions[positionKey];
         p.collateral -= collateralDecrease; // @audit underflow can happen if collateralDecrease > p.collateral
         if (checkExceedMaxLeverage(positionKey)) {
@@ -195,6 +198,7 @@ contract Perp {
         uint256 sizeDecrease
     ) external onlyPositionOwner(positionKey) {
         if (sizeDecrease == 0) revert InvalidPosition();
+        //@audit sizeDelta should be calulated on positionOpen price or current price?
         uint256 sizeDeltaInUsd = (getBTCPrice() * sizeDecrease) /
             PRECISION_WBTC_USD;
         Position storage p = positions[positionKey];
