@@ -90,7 +90,7 @@ contract Perp {
     }
 
     modifier onlyHealthyPosition(bytes32 positionKey) {
-        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkExceedMaxLeverage(positionKey)) {
             revert MaxLeverageExceeded();
         }
         _;
@@ -164,7 +164,7 @@ contract Perp {
         Position storage p = positions[positionKey];
         p.sizeInUsd += sizeInUsd;
         p.size += additionalSize;
-        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkExceedMaxLeverage(positionKey)) {
             revert MaxLeverageExceeded();
         }
         if (p.isLong) {
@@ -183,7 +183,7 @@ contract Perp {
         if (collateralDecrease == 0) revert ZeroAmount();
         Position storage p = positions[positionKey];
         p.collateral -= collateralDecrease; // @audit underflow can happen if collateralDecrease > p.collateral
-        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkExceedMaxLeverage(positionKey)) {
             revert MaxLeverageExceeded();
         }
 
@@ -193,7 +193,7 @@ contract Perp {
     function decreasePositionSize(
         bytes32 positionKey,
         uint256 sizeDecrease
-    ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
+    ) external onlyPositionOwner(positionKey) {
         if (sizeDecrease == 0) revert InvalidPosition();
         uint256 sizeDeltaInUsd = (getBTCPrice() * sizeDecrease) /
             PRECISION_WBTC_USD;
@@ -211,14 +211,10 @@ contract Perp {
             p.collateral -= abs(realisedPNL);
             liquidityToken.safeTransfer(address(pool), abs(realisedPNL));
         }
-
-        if (checkDoesNotExceedMaxLeverage(positionKey)) {
-            revert MaxLeverageExceeded();
-        }
     }
 
     function liquidatePosition(bytes32 positionKey) external {
-        if (checkDoesNotExceedMaxLeverage(positionKey)) {
+        if (checkExceedMaxLeverage(positionKey)) {
             revert("Position is healthy");
         }
         Position storage p = positions[positionKey];
@@ -263,11 +259,11 @@ contract Perp {
         }
     }
 
-    function checkDoesNotExceedMaxLeverage(
+    function checkExceedMaxLeverage(
         bytes32 positionKey
     ) internal view returns (bool) {
-        uint256 leverage = getCurrentLeverage(positionKey);
-        return leverage <= MAX_LEVERAGE;
+        uint256 leverage = getPositionLeverage(positionKey);
+        return leverage > MAX_LEVERAGE;
     }
 
     /* --------------------------------- GETTERS -------------------------------- */
@@ -289,7 +285,7 @@ contract Perp {
         return keccak256(abi.encodePacked(_account, _isLong));
     }
 
-    function getCurrentLeverage(
+    function getPositionLeverage(
         bytes32 positionKey
     ) public view returns (uint256) {
         Position memory p = positions[positionKey];
@@ -297,13 +293,24 @@ contract Perp {
         // uint borrowingFees = p.size *
         //     (block.timestamp - p.lastUpdateTime) *
         //     (1 / borrowingPerSecond);
-        uint256 sizeInUsd = (price * p.size) / PRECISION_WBTC_USD;
         int256 positionPnl = getPositionPNL(positionKey);
         uint256 leverage;
         if (positionPnl > 0) {
-            leverage = sizeInUsd / p.collateral + uint256(positionPnl);
+            // handling case for division underflow
+            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
+                return 0;
+            } else {
+                uint a = p.collateral + uint256(positionPnl);
+                leverage = p.sizeInUsd / a;
+            }
         } else {
-            leverage = sizeInUsd / p.collateral - uint256(positionPnl);
+            // handling case for division underflow
+            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
+                return type(uint256).max;
+            } else {
+                uint a = p.collateral - uint256(positionPnl);
+                leverage = p.sizeInUsd / a;
+            }
         }
         return leverage;
     }
@@ -312,6 +319,7 @@ contract Perp {
         (, int256 answer, uint256 timestamp, , ) = btcPriceFeed
             .latestRoundData();
         // require(updatedAt >= roundID, "Stale price"); this one should be in production but tests will fail with it
+        // @audit make this more robust
         require(timestamp != 0, "Round not complete");
         require(answer > 0, "Chainlink answer reporting 0");
         return uint256(answer);
@@ -366,11 +374,6 @@ contract Perp {
         uint256 currentPositionUsdValue = (p.size * price) / PRECISION_WBTC_USD;
         uint256 positionUsdValue = p.sizeInUsd;
 
-        console2.log(
-            "currentPositionUsdValue: %s, positionUsdValue: %s",
-            currentPositionUsdValue,
-            positionUsdValue
-        );
         if (p.isLong) {
             int256 pnl = int256(
                 int256(currentPositionUsdValue) - int256(positionUsdValue)
