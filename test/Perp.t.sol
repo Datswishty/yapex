@@ -282,6 +282,24 @@ contract PerpTest is Test {
         vm.stopPrank();
     }
 
+    /* --------------------------- DECREASE COLLATERAL -------------------------- */
+    function test_decreaseCollateralShouldRevertIfExceedLeverage() public {
+        vm.startPrank(lp);
+        depositToPool();
+        vm.stopPrank();
+        vm.startPrank(trader);
+        usdc.approve(address(perp), COLLATERAL_AMT);
+
+        bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
+        vm.expectRevert(
+            Perp.CollateralDecreaseExceedsPositionCollateral.selector
+        );
+        perp.decreasePositionCollateral(key, COLLATERAL_AMT);
+        vm.stopPrank();
+    }
+
+    /* ---------------------------- DECREASE POSITION --------------------------- */
+
     function test_decresePostionShouldPassIfNoPnl() public {
         vm.startPrank(lp);
         depositToPool();
@@ -319,6 +337,10 @@ contract PerpTest is Test {
         uint256 poolBalanceBefore = usdc.balanceOf(address(pool));
         perp.decreasePositionSize(key, 5e7); // 0.5 btc
         assertEq(usdc.balanceOf(address(pool)), poolBalanceBefore + 500e6);
+
+        uint256 leverageAfter = perp.getPositionLeverage(key);
+        assertEq(leverageAfter, type(uint256).max);
+
         vm.stopPrank();
     }
 
