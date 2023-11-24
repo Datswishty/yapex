@@ -25,7 +25,7 @@ contract PerpTest is Test {
         usdc = new USDCToken();
         wbtc = new WBTCToken();
         pool = new Pool(address(usdc));
-        oracle = new MockV3Aggregator(8, 20_000e8);
+        oracle = new MockV3Aggregator(6, 20_000e6); // THIS IS IN USDC NOT IN BTC YOU SHOULD USE 1e6
         perp = new Perp(address(oracle), address(pool), address(usdc));
         pool.setPerpAddress(address(perp));
 
@@ -180,7 +180,7 @@ contract PerpTest is Test {
         vm.startPrank(trader);
         usdc.approve(address(perp), COLLATERAL_AMT);
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
-        oracle.updateAnswer(10_000e8); // decrease price by half
+        oracle.updateAnswer(10_000e6); // decrease price by half
         int256 pnl = perp.getPositionPNL(key);
         //pnlLong = currentSizeUsd- openSizeUsd = 10k - 20k = -10k
         assertEq(pnl, -10_000e6); // 10k loss
@@ -194,12 +194,16 @@ contract PerpTest is Test {
         usdc.approve(address(perp), COLLATERAL_AMT);
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
         usdc.approve(address(perp), COLLATERAL_AMT);
+        console2.log(perp.getPositionLeverage(key));
+        console2.log("ZALUPA");
         perp.increaseCollateral(key, COLLATERAL_AMT);
 
         (, , uint256 collateral, , , , , uint256 lastIncreasedTime) = perp
             .positions(key);
 
         uint256 leverage = perp.getPositionLeverage(key);
+        console.log("HERE");
+        console2.log(leverage);
         assertEq(perp.getCurrentTotalPnl(), 0);
 
         assertEq(leverage, 10);
@@ -250,7 +254,7 @@ contract PerpTest is Test {
         usdc.approve(address(perp), COLLATERAL_AMT);
 
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
-        oracle.updateAnswer(10_000e8); // decrease price by half
+        oracle.updateAnswer(10_000e6); // decrease price by half
         int256 pnl = perp.getPositionPNL(key);
         assertEq(pnl, -10_000e6); // 10k loss
         vm.expectRevert(Perp.MaxLeverageExceeded.selector);
@@ -268,9 +272,9 @@ contract PerpTest is Test {
 
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
         (, , , , , uint sizeInUsd, , ) = perp.positions(key);
-        oracle.updateAnswer(30_000e8); // increase price by half
+        oracle.updateAnswer(30_000e6); // increase price by half
         uint256 leverage = perp.getPositionLeverage(key);
-        assertEq(leverage, 1);
+        assertEq(leverage, 2); // 30k/(1k + 10000)
         int256 pnl = perp.getPositionPNL(key);
         assertEq(pnl, 10_000e6); // 10k profit
         // Increase position size by 1 btc
@@ -278,7 +282,7 @@ contract PerpTest is Test {
 
         uint256 leverageAfter = perp.getPositionLeverage(key);
 
-        assertEq(leverageAfter, 4); // 50k/11k = 4
+        assertEq(leverageAfter, 5); // 60k/11k = 5(.45)
         vm.stopPrank();
     }
 
@@ -330,7 +334,7 @@ contract PerpTest is Test {
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
         uint256 leverageBefore = perp.getPositionLeverage(key);
         assertEq(leverageBefore, 20);
-        oracle.updateAnswer(19000e8); // decrease to 19k from 20k- 1k loss
+        oracle.updateAnswer(19000e6); // decrease to 19k from 20k- 1k loss
         int256 pnl = perp.getPositionPNL(key);
 
         assertEq(pnl, -1000e6); // 1k loss
@@ -356,7 +360,7 @@ contract PerpTest is Test {
         bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
         uint256 leverageBefore = perp.getPositionLeverage(key);
         assertEq(leverageBefore, 20);
-        oracle.updateAnswer(21000e8); // increase to 21k from 20k- 1k profit
+        oracle.updateAnswer(21000e6); // increase to 21k from 20k- 1k profit
         int256 pnl = perp.getPositionPNL(key);
 
         assertEq(pnl, 1000e6); // 1k profit

@@ -60,13 +60,14 @@ contract Perp {
     AggregatorV3Interface internal btcPriceFeed;
     uint256 constant MAX_LEVERAGE = 20;
     uint256 constant MAX_RESERVE_PERCENT_BPS = 1_000;
-    uint256 constant PRECISION_WBTC_USD = 1e10;
+    uint256 constant PRECISION_WBTC = 1e8;
     uint256 constant PRECISION_USDC = 1e6;
     uint256 constant MAX_RESERVE_UTILIZATION_PERCENT_BPS = 8_000;
     uint256 constant PERCENTAGE_BPS = 10_000;
     uint256 constant PERCENTAGE_LIQUIDATION_FEE = 5;
     uint256 constant PERCENTAGE_BORROW_FEE = 1;
-    uint256 constant borrowingPerSecond = 315_360_000;
+    uint256 constant SECONDS_PER_YEAR = 315_360_000;
+    uint256 constant BORROWING_PER_SHARE_PER_SECOND = 1e30 / SECONDS_PER_YEAR;
     IERC20 public liquidityToken; //usdc
     uint256 public openInterestLongBtc;
     uint256 public openInterestShortBtc;
@@ -119,10 +120,13 @@ contract Perp {
         // collateral will be in 6 decimal and size will be in 8 so handling maths accordingly
         uint256 price = getBTCPrice();
         //@dev if sizeInUsd < collateral. this will underflow and revert, this is intended behaviour as we don't want to allow size < collateral
-        uint256 sizeInUsd = (price * size) / PRECISION_WBTC_USD;
+        uint256 sizeInUsd = (price * size) / PRECISION_WBTC;
         // 20000e6 / 1000e6 = 20
+        // console2.log(price);
+        // console2.log(sizeInUsd);
+        // console2.log(collateral);
         uint256 leverage = sizeInUsd / collateral;
-
+        //console2.log(leverage);
         if (leverage > MAX_LEVERAGE) revert InvalidPosition();
 
         if (sizeInUsd > getPoolUsableBalance()) {
@@ -143,7 +147,7 @@ contract Perp {
             block.timestamp
         );
         adjustOpenInterest(size, isLong, sizeInUsd);
-        return positionKey; // @audit do we really need this? Yes there is no other way to get user position key
+        return positionKey;
     }
 
     function increaseCollateral(
@@ -160,8 +164,7 @@ contract Perp {
         uint256 additionalSize
     ) external onlyPositionOwner(positionKey) onlyHealthyPosition(positionKey) {
         if (additionalSize == 0) revert ZeroAmount();
-        uint256 sizeInUsd = (getBTCPrice() * additionalSize) /
-            PRECISION_WBTC_USD;
+        uint256 sizeInUsd = (getBTCPrice() * additionalSize) / PRECISION_WBTC;
         Position storage p = positions[positionKey];
         p.sizeInUsd += sizeInUsd;
         p.size += additionalSize;
@@ -200,10 +203,10 @@ contract Perp {
         if (sizeDecrease == 0) revert InvalidPosition();
         //@audit sizeDelta should be calulated on positionOpen price or current price?
         uint256 sizeDeltaInUsd = (getBTCPrice() * sizeDecrease) /
-            PRECISION_WBTC_USD;
+            PRECISION_WBTC;
         Position storage p = positions[positionKey];
         uint256 currentTotalSizeInUsd = (getBTCPrice() * p.size) /
-            PRECISION_WBTC_USD;
+            PRECISION_WBTC;
         int totalPositionPNL = getPositionPNL(positionKey);
         p.size -= sizeDecrease; // @audit underflow can happen if sizeDecrese > p.size
         p.sizeInUsd -= sizeDeltaInUsd; //@audit not sure of this,there can be some issue.
@@ -272,15 +275,15 @@ contract Perp {
 
     /* --------------------------------- GETTERS -------------------------------- */
 
-    function getPositionBorrowFees(
-        bytes32 positionKey
-    ) internal view returns (uint) {
-        Position memory p = positions[positionKey];
-        return
-            p.size *
-            (block.timestamp - p.lastUpdateTime) *
-            (1 / borrowingPerSecond);
-    } // I dunno why we check only lastUpdateTime
+    // function getPositionBorrowFees(
+    //     bytes32 positionKey
+    // ) internal view returns (uint) {
+    //     Position memory p = positions[positionKey];
+    //     return
+    //         p.size *
+    //         (block.timestamp - p.lastUpdateTime) *
+    //         (1 / borrowingPerSecond);
+    // } // I dunno why we check only lastUpdateTime
 
     function getPositionKey(
         address _account,
@@ -293,37 +296,64 @@ contract Perp {
         bytes32 positionKey
     ) public view returns (uint256) {
         Position memory p = positions[positionKey];
+        uint borrowingFees = getPositionBorrowFees(positionKey);
         uint price = getBTCPrice();
-        // uint borrowingFees = p.size *
-        //     (block.timestamp - p.lastUpdateTime) *
-        //     (1 / borrowingPerSecond);
         int256 positionPnl = getPositionPNL(positionKey);
+        // console2.log("PNL");
+        // console2.log(positionPnl);
+        uint absolutePnL = abs(positionPnl);
         uint256 leverage;
         if (positionPnl > 0) {
             // handling case for division underflow
-            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
+            if (absolutePnL >= p.sizeInUsd - p.collateral) {
                 return 0;
             } else {
-                uint a = p.collateral + uint256(positionPnl);
-                leverage = p.sizeInUsd / a;
+                // console2.log("INFO");
+                // console2.log(p.size);
+                // console2.log(price);
+                // console2.log(p.collateral);
+                // console2.log(absolutePnL);
+                leverage =
+                    ((p.size / PRECISION_WBTC) * price) /
+                    (p.collateral / PRECISION_USDC + absolutePnL);
             }
         } else {
             // handling case for division underflow
-            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
+            if (abs(positionPnl) >= p.sizeInUsd - p.collateral) {
                 return type(uint256).max;
             } else {
-                uint a = p.collateral - uint256(positionPnl);
-                leverage = p.sizeInUsd / a;
+                console2.log("INFO2");
+                console2.log(p.size);
+                console2.log(price);
+                console2.log(p.collateral);
+                console2.log(absolutePnL);
+                leverage =
+                    ((p.size / PRECISION_WBTC) * price) /
+                    (p.collateral - absolutePnL);
             }
         }
+        console2.log("LEVERAGE");
+        console2.log(leverage);
         return leverage;
+    }
+
+    function getPositionBorrowFees(
+        bytes32 positionKey
+    ) internal view returns (uint256) {
+        Position memory p = positions[positionKey];
+        return
+            (p.size *
+                1e30 *
+                (block.timestamp - p.lastUpdateTime) *
+                BORROWING_PER_SHARE_PER_SECOND) / 1e30;
     }
 
     function getBTCPrice() internal view returns (uint256) {
         (, int256 answer, uint256 timestamp, , ) = btcPriceFeed
             .latestRoundData();
         // require(updatedAt >= roundID, "Stale price"); this one should be in production but tests will fail with it
-        // @audit make this more robust
+        // @audit make this more robusa
+        // @datsw I think this is fine for our project
         require(timestamp != 0, "Round not complete");
         require(answer > 0, "Chainlink answer reporting 0");
         return uint256(answer);
@@ -350,13 +380,13 @@ contract Perp {
 
     function getCurrentPnlLongs() public view returns (int256) {
         uint256 currentLongOpenInterestValue = (openInterestLongBtc *
-            getBTCPrice()) / PRECISION_WBTC_USD;
+            getBTCPrice()) / PRECISION_WBTC;
         return int256(currentLongOpenInterestValue - openInterestLongUsd);
     }
 
     function getCurrentPnlShorts() public view returns (int256) {
         uint256 currentShortOpenInterestValue = (openInterestShortBtc *
-            getBTCPrice()) / PRECISION_WBTC_USD;
+            getBTCPrice()) / PRECISION_WBTC;
         return int256(openInterestShortUsd - currentShortOpenInterestValue);
     }
 
@@ -375,21 +405,17 @@ contract Perp {
     function getPositionPNL(bytes32 positionKey) public view returns (int) {
         Position storage p = positions[positionKey];
         uint256 price = getBTCPrice();
-        uint256 currentPositionUsdValue = (p.size * price) / PRECISION_WBTC_USD;
+        uint256 currentPositionUsdValue = (p.size * price) / PRECISION_WBTC;
         uint256 positionUsdValue = p.sizeInUsd;
 
         if (p.isLong) {
-            int256 pnl = int256(
-                int256(currentPositionUsdValue) - int256(positionUsdValue)
-            );
+            int256 pnl = int256(currentPositionUsdValue) -
+                int256(positionUsdValue);
             return pnl;
-            // return int(price - p.averagePositionPrice) * int(p.size);
         } else {
-            int256 pnl = int256(
-                int256(positionUsdValue) - int256(currentPositionUsdValue)
-            );
+            int256 pnl = int256(positionUsdValue) -
+                int256(currentPositionUsdValue);
             return pnl;
-            // return int(p.averagePositionPrice - price) * int(p.size);
         }
     }
 
