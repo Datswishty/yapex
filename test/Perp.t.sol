@@ -210,6 +210,7 @@ contract PerpTest is Test {
     }
 
     function test_increasePostion() public {
+        oracle.updateAnswer(20_000e8);
         vm.startPrank(lp);
         depositToPool();
         vm.stopPrank();
@@ -243,6 +244,7 @@ contract PerpTest is Test {
     }
 
     function test_increaseSizeWhenPositionInLossShouldFail() public {
+        oracle.updateAnswer(20_000e8);
         vm.startPrank(lp);
         depositToPool();
         vm.stopPrank();
@@ -321,6 +323,7 @@ contract PerpTest is Test {
     function test_decreasePositionShouldPayOutstandingPnlToPoolWhenLoss()
         public
     {
+        oracle.updateAnswer(20_000e8);
         vm.startPrank(lp);
         depositToPool();
         vm.stopPrank();
@@ -339,7 +342,7 @@ contract PerpTest is Test {
         assertEq(usdc.balanceOf(address(pool)), poolBalanceBefore + 500e6);
 
         uint256 leverageAfter = perp.getPositionLeverage(key);
-        assertEq(leverageAfter, type(uint256).max);
+        assertEq(leverageAfter, 19);
 
         vm.stopPrank();
     }
@@ -364,5 +367,17 @@ contract PerpTest is Test {
         perp.decreasePositionSize(key, 5e7); // 0.5 btc
         assertEq(usdc.balanceOf(trader), traderBalanceBefore + 500e6);
         vm.stopPrank();
+    }
+
+    function test_shouldNotBeLiquidateableWithOkNegativePnL() public {
+        vm.startPrank(lp);
+        depositToPool();
+        vm.stopPrank();
+        vm.startPrank(trader);
+        usdc.approve(address(perp), COLLATERAL_AMT);
+        oracle.updateAnswer(10_000e8);
+        bytes32 key = perp.openPosition(COLLATERAL_AMT, 1e8, true);
+        oracle.updateAnswer(9_999e8);
+        assert(perp.getPositionLeverage(key) <= 20);
     }
 }

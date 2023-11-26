@@ -61,6 +61,7 @@ contract Perp {
     uint256 constant MAX_LEVERAGE = 20;
     uint256 constant MAX_RESERVE_PERCENT_BPS = 1_000;
     uint256 constant PRECISION_WBTC_USD = 1e10;
+    uint256 constant PRECISION_WBTC = 1e8;
     uint256 constant PRECISION_USDC = 1e6;
     uint256 constant MAX_RESERVE_UTILIZATION_PERCENT_BPS = 8_000;
     uint256 constant PERCENTAGE_BPS = 10_000;
@@ -206,8 +207,8 @@ contract Perp {
             PRECISION_WBTC_USD;
         int totalPositionPNL = getPositionPNL(positionKey);
         p.size -= sizeDecrease; // @audit underflow can happen if sizeDecrese > p.size
-        p.sizeInUsd -= sizeDeltaInUsd; //@audit not sure of this,there can be some issue.
-        int realisedPNL = int(totalPositionPNL * int(sizeDeltaInUsd)) /
+        p.sizeInUsd = (getBTCPrice() * p.size) / PRECISION_WBTC_USD; //@audit not sure of this,there can be some issue.
+        int realisedPNL = (totalPositionPNL * int(sizeDeltaInUsd)) /
             int(currentTotalSizeInUsd);
         if (realisedPNL > 0) {
             liquidityToken.safeTransfer(msg.sender, abs(realisedPNL));
@@ -293,28 +294,18 @@ contract Perp {
         bytes32 positionKey
     ) public view returns (uint256) {
         Position memory p = positions[positionKey];
-        uint price = getBTCPrice();
+        // uint price = getBTCPrice();
         // uint borrowingFees = p.size *
         //     (block.timestamp - p.lastUpdateTime) *
         //     (1 / borrowingPerSecond);
-        int256 positionPnl = getPositionPNL(positionKey);
+
+        // position leverage = debt/collateral
+        int256 positionPnL = getPositionPNL(positionKey);
         uint256 leverage;
-        if (positionPnl > 0) {
-            // handling case for division underflow
-            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
-                return 0;
-            } else {
-                uint a = p.collateral + uint256(positionPnl);
-                leverage = p.sizeInUsd / a;
-            }
+        if (positionPnL > 0) {
+            leverage = p.sizeInUsd / (p.collateral + abs(positionPnL));
         } else {
-            // handling case for division underflow
-            if (uint256(positionPnl) >= p.sizeInUsd - p.collateral) {
-                return type(uint256).max;
-            } else {
-                uint a = p.collateral - uint256(positionPnl);
-                leverage = p.sizeInUsd / a;
-            }
+            leverage = (p.sizeInUsd + abs(positionPnL)) / (p.collateral);
         }
         return leverage;
     }
@@ -379,15 +370,13 @@ contract Perp {
         uint256 positionUsdValue = p.sizeInUsd;
 
         if (p.isLong) {
-            int256 pnl = int256(
-                int256(currentPositionUsdValue) - int256(positionUsdValue)
-            );
+            int256 pnl = int256(currentPositionUsdValue) -
+                int256(positionUsdValue);
             return pnl;
             // return int(price - p.averagePositionPrice) * int(p.size);
         } else {
-            int256 pnl = int256(
-                int256(positionUsdValue) - int256(currentPositionUsdValue)
-            );
+            int256 pnl = int256(positionUsdValue) -
+                int256(currentPositionUsdValue);
             return pnl;
             // return int(p.averagePositionPrice - price) * int(p.size);
         }
