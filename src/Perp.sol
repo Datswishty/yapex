@@ -143,8 +143,8 @@ contract Perp {
             sizeInUsd,
             block.timestamp
         );
-        adjustOpenInterest(size, isLong, sizeInUsd);
-        return positionKey; // @audit do we really need this? Yes there is no other way to get user position key
+        increaseOpenInterest(size, sizeInUsd, isLong);
+        return positionKey;
     }
 
     function increaseCollateral(
@@ -216,6 +216,8 @@ contract Perp {
             p.collateral -= abs(realisedPNL);
             liquidityToken.safeTransfer(address(pool), abs(realisedPNL));
         }
+
+        descreaseOpenInterest(sizeDecrease, sizeDeltaInUsd, p.isLong);
     }
 
     function liquidatePosition(bytes32 positionKey) external {
@@ -228,6 +230,7 @@ contract Perp {
             revert("IDK what to do in that case");
         }
         uint positionBorrowFees = getPositionBorrowFees(positionKey);
+        descreaseOpenInterest(p.size, p.sizeInUsd, p.isLong);
         delete positions[positionKey];
 
         if (realisedPNL > 0) {
@@ -250,10 +253,10 @@ contract Perp {
 
     /* -------------------------------- INTERNAL -------------------------------- */
 
-    function adjustOpenInterest(
+    function increaseOpenInterest(
         uint256 size,
-        bool isLong,
-        uint256 sizeUsd
+        uint256 sizeUsd,
+        bool isLong
     ) internal {
         if (isLong) {
             openInterestLongBtc += size;
@@ -261,6 +264,20 @@ contract Perp {
         } else {
             openInterestShortBtc += size;
             openInterestShortUsd += sizeUsd;
+        }
+    }
+
+    function descreaseOpenInterest(
+        uint256 size,
+        uint256 sizeUsd,
+        bool isLong
+    ) internal {
+        if (isLong) {
+            openInterestLongBtc -= size;
+            openInterestLongUsd -= sizeUsd;
+        } else {
+            openInterestShortBtc -= size;
+            openInterestShortUsd -= sizeUsd;
         }
     }
 
